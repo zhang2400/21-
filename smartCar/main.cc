@@ -1,396 +1,402 @@
-#include "headfile.h"
-#include "parameter.h"
-#include "Img_process.h"
-#include "PID.h"
-#include "garage.h"
-#include "utils.h"
-#include "cross.h"
-#include "motor.h"
-#include "circle.h"
-#include "rot.h"
-#include "encoder.h"
-#include "turn.h"
-using namespace cv;
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <vector>
+#include <csignal>
 
+#include <opencv2/opencv.hpp>
+#include <net.h>
+#include <allocator.h>
 
-Motor motor;
-LCD lcd;
+#include "ww_camera_server.h"
 
-Mat img;
-Mat bird_img; 
-Mat img_raw;
-Mat img_mb;
-Mat img_bin;
-Mat transform_matrix;  // 透视变换矩阵
-bool transform_initialized = false;
+struct Detection {
+    cv::Rect2f box;
+    int label;
+    float score;
+};
 
-int track_with = 45;// 巡线宽度（像素）
-int zebra_width = 0;// 斑马线宽度（像素）
-float angle;// 当前转角
+static std::atomic<bool> g_running(true);
+static ncnn::UnlockedPoolAllocator g_blob_allocator;
+static ncnn::UnlockedPoolAllocator g_workspace_allocator;
 
-extern int direction_l;
-extern int direction_r;
+static void on_signal(int)
+{
+    g_running = false;
+}
 
+static void install_signal_handlers()
+{
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+}
 
+static bool file_exists(const std::string& path)
+{
+    std::ifstream f(path.c_str(), std::ios::binary);
+    return f.good();
+}
 
-// 当前巡线模式
-enum track_type_e track_type = TRACK_LEFT;
-void process_img(void);
+static std::string first_existing_path(const std::vector<std::string>& paths)
+{
+    for (size_t i = 0; i < paths.size(); ++i) {
+        if (file_exists(paths[i])) return paths[i];
+    }
+    return paths.empty() ? std::string() : paths[0];
+}
 
+static bool parse_int(const std::string& text, int* value)
+{
+    char* end = NULL;
+    long v = std::strtol(text.c_str(), &end, 10);
+    if (end == text.c_str() || *end != '\0') return false;
+    *value = (int)v;
+    return true;
+}
 
-void imu_get_thread(void *arg);
+static float intersection_area(const Detection& a, const Detection& b)
+{
+    const float x1 = std::max(a.box.x, b.box.x);
+    const float y1 = std::max(a.box.y, b.box.y);
+    const float x2 = std::min(a.box.x + a.box.width, b.box.x + b.box.width);
+    const float y2 = std::min(a.box.y + a.box.height, b.box.y + b.box.height);
+    const float w = x2 - x1;
+    const float h = y2 - y1;
+    if (w <= 0.f || h <= 0.f) return 0.f;
+    return w * h;
+}
 
-int main() 
-{  
-    motor.motor_init();
-    
-    // motor.set_motor1(0, 3000);
-    // motor.set_motor2(0, 3000);
-    
-    // TimerThread thread_1(imu_get_thread, NULL, 10);
+static void nms_sorted_bboxes(const std::vector<Detection>& dets, std::vector<int>& picked, float nms_threshold)
+{
+    picked.clear();
+    const int n = (int)dets.size();
+    std::vector<float> areas(n);
+    for (int i = 0; i < n; ++i) {
+        areas[i] = dets[i].box.area();
+    }
+
+    for (int i = 0; i < n; ++i) {
+        const Detection& a = dets[i];
+        bool keep = true;
+        for (size_t j = 0; j < picked.size(); ++j) {
+            const Detection& b = dets[picked[j]];
+            const float inter_area = intersection_area(a, b);
+            const float union_area = areas[i] + areas[picked[j]] - inter_area;
+            if (union_area > 0.f && inter_area / union_area > nms_threshold) {
+                keep = false;
+                break;
+            }
+        }
+        if (keep) picked.push_back(i);
+    }
+}
+
+static bool load_model(ncnn::Net& net, const std::string& param_path, const std::string& bin_path, int threads)
+{
+    net.opt.use_vulkan_compute = false;
+    net.opt.num_threads = threads;
+    net.opt.lightmode = true;
+    net.opt.blob_allocator = &g_blob_allocator;
+    net.opt.workspace_allocator = &g_workspace_allocator;
+    net.opt.use_fp16_packed = false;
+    net.opt.use_fp16_storage = false;
+    net.opt.use_fp16_arithmetic = false;
+
+    if (net.load_param(param_path.c_str()) != 0) {
+        std::cerr << "load param failed: " << param_path << std::endl;
+        return false;
+    }
+    if (net.load_model(bin_path.c_str()) != 0) {
+        std::cerr << "load bin failed: " << bin_path << std::endl;
+        return false;
+    }
+    return true;
+}
+
+static std::vector<Detection> infer_one_frame(
+    ncnn::Net& net,
+    const cv::Mat& bgr,
+    int input_size,
+    float score_thresh,
+    float nms_thresh)
+{
+    const int img_w = bgr.cols;
+    const int img_h = bgr.rows;
+
+    ncnn::Mat in = ncnn::Mat::from_pixels_resize(
+        bgr.data,
+        ncnn::Mat::PIXEL_BGR,
+        img_w,
+        img_h,
+        input_size,
+        input_size);
+
+    const float norm_vals[3] = {1.f / 255.f, 1.f / 255.f, 1.f / 255.f};
+    in.substract_mean_normalize(NULL, norm_vals);
+
+    ncnn::Extractor ex = net.create_extractor();
+    ex.set_light_mode(true);
+    ex.set_blob_allocator(&g_blob_allocator);
+    ex.set_workspace_allocator(&g_workspace_allocator);
+    ex.input("in0", in);
+
+    ncnn::Mat out;
+    if (ex.extract("out0", out) != 0) {
+        return std::vector<Detection>();
+    }
+
+    const int num_anchors = out.h;
+    const int feat_dim = out.w;
+    if (num_anchors <= 0 || feat_dim < 5) {
+        return std::vector<Detection>();
+    }
+
+    const int num_classes = feat_dim - 4;
+    const float scale_x = (float)img_w / (float)input_size;
+    const float scale_y = (float)img_h / (float)input_size;
+
+    std::vector<Detection> proposals;
+    proposals.reserve(num_anchors / 4);
+
+    for (int i = 0; i < num_anchors; ++i) {
+        const float* row = out.row(i);
+        const float x1 = row[0] * scale_x;
+        const float y1 = row[1] * scale_y;
+        const float x2 = row[2] * scale_x;
+        const float y2 = row[3] * scale_y;
+
+        int best_label = -1;
+        float best_score = 0.f;
+        for (int c = 0; c < num_classes; ++c) {
+            const float score = row[4 + c];
+            if (score > best_score) {
+                best_score = score;
+                best_label = c;
+            }
+        }
+
+        if (best_score < score_thresh || best_label < 0) continue;
+
+        Detection obj;
+        obj.label = best_label;
+        obj.score = best_score;
+        obj.box.x = std::max(0.f, std::min(x1, (float)img_w - 1.f));
+        obj.box.y = std::max(0.f, std::min(y1, (float)img_h - 1.f));
+        obj.box.width = std::max(0.f, std::min(x2, (float)img_w - 1.f) - obj.box.x);
+        obj.box.height = std::max(0.f, std::min(y2, (float)img_h - 1.f) - obj.box.y);
+        if (obj.box.width <= 1.f || obj.box.height <= 1.f) continue;
+        proposals.push_back(obj);
+    }
+
+    std::sort(proposals.begin(), proposals.end(), [](const Detection& a, const Detection& b) {
+        return a.score > b.score;
+    });
+
+    std::vector<Detection> results;
+    for (int c = 0; c < num_classes; ++c) {
+        std::vector<Detection> class_dets;
+        for (size_t i = 0; i < proposals.size(); ++i) {
+            if (proposals[i].label == c) class_dets.push_back(proposals[i]);
+        }
+        if (class_dets.empty()) continue;
+
+        std::vector<int> picked;
+        nms_sorted_bboxes(class_dets, picked, nms_thresh);
+        for (size_t i = 0; i < picked.size(); ++i) {
+            results.push_back(class_dets[picked[i]]);
+        }
+    }
+
+    return results;
+}
+
+static void draw_results(cv::Mat& frame, const std::vector<Detection>& dets, double infer_ms, double fps)
+{
+    for (size_t i = 0; i < dets.size(); ++i) {
+        const Detection& d = dets[i];
+        cv::rectangle(frame, d.box, cv::Scalar(0, 255, 0), 2);
+
+        char label[64];
+        std::snprintf(label, sizeof(label), "cls:%d %.2f", d.label, d.score);
+        int base_line = 0;
+        cv::Size text_size = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, 0.45, 1, &base_line);
+        int x = std::max(0, (int)d.box.x);
+        int y = std::max(text_size.height + 3, (int)d.box.y);
+        cv::rectangle(frame,
+                      cv::Rect(x, y - text_size.height - 3, text_size.width + 4, text_size.height + base_line + 4),
+                      cv::Scalar(0, 255, 0),
+                      -1);
+        cv::putText(frame, label, cv::Point(x + 2, y - 2),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 0), 1);
+    }
+
+    char speed_text[96];
+    std::snprintf(speed_text, sizeof(speed_text), "infer %.1f ms  %.1f FPS  dets %zu", infer_ms, fps, dets.size());
+    cv::putText(frame, speed_text, cv::Point(5, 18),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+}
+
+static std::string format_detections(const std::vector<Detection>& dets)
+{
+    std::ostringstream oss;
+    for (size_t i = 0; i < dets.size(); ++i) {
+        const Detection& d = dets[i];
+        oss << " [cls=" << d.label
+            << " score=" << d.score
+            << " x=" << (int)d.box.x
+            << " y=" << (int)d.box.y
+            << " w=" << (int)d.box.width
+            << " h=" << (int)d.box.height
+            << "]";
+    }
+    return oss.str();
+}
+
+static void print_usage(const char* prog)
+{
+    std::cout
+        << "Usage / 使用方法:\n"
+        << "  " << prog << " [camera_index|video_path] [param_path] [bin_path] [score_thresh] [nms_thresh] [input_size] [server_port]\n\n"
+        << "  " << prog << " ... [server_port] [threads] [camera_width] [camera_height] [print_interval]\n\n"
+        << "Parameters / 参数说明:\n"
+        << "  camera_index|video_path  摄像头编号或视频文件路径，默认 0 表示打开 /dev/video0\n"
+        << "  param_path               ncnn param 模型结构文件路径\n"
+        << "  bin_path                 ncnn bin 模型权重文件路径\n"
+        << "  score_thresh             置信度阈值，低于该值的检测框会被丢弃，默认 0.35\n"
+        << "  nms_thresh               NMS 去重阈值，用于去掉重叠检测框，默认 0.45\n"
+        << "  input_size               模型输入尺寸，越小越快但精度可能下降，默认 224\n"
+        << "  server_port              图传网页端口，默认 8080，设置为 0 可关闭图传\n"
+        << "  threads                  ncnn 推理线程数，默认 4\n"
+        << "  camera_width             摄像头采集宽度，默认 160\n"
+        << "  camera_height            摄像头采集高度，默认 120\n"
+        << "  print_interval           终端打印间隔，默认每 10 帧打印一次\n\n"
+        << "Defaults / 默认值:\n"
+        << "  source                   0\n"
+        << "  param_path               自动查找 ./model.ncnn.param, ./smartCar/model.ncnn.param, ../smartCar/model.ncnn.param\n"
+        << "  bin_path                 自动查找 ./model.ncnn.bin, ./smartCar/model.ncnn.bin, ../smartCar/model.ncnn.bin\n"
+        << "  score_thresh             0.35\n"
+        << "  nms_thresh               0.45\n"
+        << "  input_size               224\n"
+        << "  server_port              8080\n"
+        << "  threads                  4\n"
+        << "  camera                   160x120\n"
+        << "  print_interval           10\n";
+}
+
+int main(int argc, char** argv)
+{
+    if (argc > 1 && (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help")) {
+        print_usage(argv[0]);
+        return 0;
+    }
+
+    install_signal_handlers();
+
+    const std::string source = argc > 1 ? argv[1] : "0";
+    const std::string param_path = argc > 2 ? argv[2] : first_existing_path(std::vector<std::string>{
+        "./model.ncnn.param",
+        "./smartCar/model.ncnn.param",
+        "../smartCar/model.ncnn.param"});
+    const std::string bin_path = argc > 3 ? argv[3] : first_existing_path(std::vector<std::string>{
+        "./model.ncnn.bin",
+        "./smartCar/model.ncnn.bin",
+        "../smartCar/model.ncnn.bin"});
+    const float score_thresh = argc > 4 ? std::strtof(argv[4], NULL) : 0.35f;
+    const float nms_thresh = argc > 5 ? std::strtof(argv[5], NULL) : 0.45f;
+    const int input_size = argc > 6 ? std::atoi(argv[6]) : 224;
+    const int server_port = argc > 7 ? std::atoi(argv[7]) : 8080;
+    const int threads = argc > 8 ? std::atoi(argv[8]) : 4;
+    const int camera_width = argc > 9 ? std::atoi(argv[9]) : 160;
+    const int camera_height = argc > 10 ? std::atoi(argv[10]) : 120;
+    const int print_interval = argc > 11 ? std::atoi(argv[11]) : 10;
+
+    if (input_size <= 0) {
+        std::cerr << "invalid input_size: " << input_size << std::endl;
+        return 1;
+    }
+
+    ncnn::Net net;
+    if (!load_model(net, param_path, bin_path, threads)) {
+        return 2;
+    }
+
+    cv::VideoCapture cap;
+    int camera_index = 0;
+    if (parse_int(source, &camera_index)) {
+        cap.open(camera_index);
+        cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, camera_width);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, camera_height);
+        cap.set(cv::CAP_PROP_FPS, 60);
+    } else {
+        cap.open(source);
+    }
+
+    if (!cap.isOpened()) {
+        std::cerr << "open video source failed: " << source << std::endl;
+        return 3;
+    }
+
     CameraStreamServer server;
-    if(server.start_server(8080) < 0) {
-        return -1;
+    if (server_port > 0) {
+        if (server.start_server(server_port) < 0) {
+            std::cerr << "stream server start failed, continue without stream server" << std::endl;
+        }
+        install_signal_handlers();
     }
-    //wait for start
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    lcd.lcd_init();
-    motor_PID_init(&motor_l, 0, 1000, 250, 100, 5000, 500, 600, 1, MOTOR_PWM_DUTY_MAX, MOTOR_PWM_DUTY_MAX, MOTOR_PWM_DUTY_MAX);
-    motor_PID_init(&motor_r, 0, 1000, 250, 100, 5000, 500, 600, 1, MOTOR_PWM_DUTY_MAX, MOTOR_PWM_DUTY_MAX, MOTOR_PWM_DUTY_MAX);
-    // 原来的 kp=7021 太大，改成合适的值
-    pid_init(&motor_pid_l, 6.0f, 0.8f, 0.12f, 0.8f, 500.0f, 500.0f, 500.0f);  // 限幅也调小
-    pid_init(&motor_pid_r, 6.0f, 0.8f, 0.12f, 0.8f, 500.0f, 500.0f, 500.0f);
-    pid_init(&target_speed_pid, 5.0, 0, 30.0, 0.6, 5, 5, 5);
-    pid_init(&posloop_pid, 200., 0, 0., 0.7, MOTOR_PWM_DUTY_MAX, MOTOR_PWM_DUTY_MAX, MOTOR_PWM_DUTY_MAX);
-    pid_init(&servo_pid, 1.2f, 0.0f, 0.1f, 0.8f, 14.5f, 0.0f, 14.5f);
-    VideoCapture cap(0);
-    cap.set(CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
-    cap.set(CAP_PROP_FRAME_WIDTH, 160);
-    cap.set(CAP_PROP_FRAME_HEIGHT, 120);
-    cap.set(CAP_PROP_FPS,60);
-    
-    // // ========== 添加透视变换部分 ==========
-    // // 初始化透视变换矩阵（只需要初始化一次）
-    // if (!transform_initialized) {
-    //     transform_matrix = getPerspectiveTransform(src_vertices, dst_vertices);
-    //     transform_initialized = true;
-        
-    //     // 可选：打印变换矩阵，用于调试
-    //     // std::cout << "Transform matrix: " << transform_matrix << std::endl;
-    // }
-    
- 
-    // thread_1.start();
-    while(server.is_running()) 
-    // while(1)
-    {
-        cap >> img;
-        if(img.empty()) {
-            break;
-        }    
-        
-        
-    //    process_img();
-    //    find_corners();
-        aim_distance = 0.58;
-        // for(int i = 0; i < left_line.len; i++) {
-        //     circle(bird_img, Point(left_rp[i][0], left_rp[i][1]), 1, Scalar(255,0,0), -1);
-        // }
-        // // for(int i = 0; i < 60; i++) {
-        // //     circle(bird_img, Point(left_line.center_line[i][0], left_line.center_line[i][1]), 1, Scalar(0,0,255), -1);
-        // // }
-        // for(int i = 0; i < right_line.len; i++) {
-        //     circle(bird_img, Point(right_b[i][0], right_b[i][1]), 1, Scalar(0,255,0), -1);
-        // }
-        // 临时测试：画一条水平线
-        // for(int i = 0; i < 50; i++) {
-        //     circle(img, Point(50 + i, 60), 2, Scalar(0,255,0), -1);
-        // }
 
-        // detect_zebra_cross_horizontal(70, 80, &DEFAULT_PARAMS, NULL, &zebra_width, img_bin);
-        server.update_frame(img);
+    std::cout << "ncnn camera detect started\n"
+              << "source=" << source
+              << " param=" << param_path
+              << " bin=" << bin_path
+              << " score_thresh=" << score_thresh
+              << " nms_thresh=" << nms_thresh
+              << " input_size=" << input_size
+              << " threads=" << threads
+              << " camera=" << camera_width << "x" << camera_height
+              << " print_interval=" << print_interval
+              << std::endl;
 
-        // 单侧线少，切换巡线方向  切外向圆
-        if (rpts0s_num < rpts1s_num / 2 && rpts0s_num < 60) {
-            track_type = TRACK_RIGHT;
-        } else if (rpts1s_num < rpts0s_num / 2 && rpts1s_num < 60) {
-            track_type = TRACK_LEFT;
-        } else if (rpts0s_num < 20 && rpts1s_num > rpts0s_num) {
-            track_type = TRACK_RIGHT;
-        } else if (rpts1s_num < 20 && rpts0s_num > rpts1s_num) {
-            track_type = TRACK_LEFT;
-        }
-        // 车库斑马线检查(斑马线优先级高，最先检查)
-        // check_garage();
-        // 总钻风检查Apriltag(找赛道上的黑斑)
-        //先空着
+    int frame_id = 0;
+    double ema_fps = 0.0;
+    cv::Mat frame;
 
-        // 分别检查十字 三叉 和圆环, 十字优先级最高
-        // if (garage_type == GARAGE_NONE &&
-        //     apriltag_type != APRILTAG_FOUND && apriltag_type != APRILTAG_LEAVE)
-        //     check_cross();
-        // if (garage_type == GARAGE_NONE && cross_type == CROSS_NONE && circle_type == CIRCLE_NONE &&
-        //     apriltag_type != APRILTAG_FOUND && apriltag_type != APRILTAG_LEAVE)
-        //     check_yroad();
-        // if (garage_type == GARAGE_NONE && cross_type == CROSS_NONE && yroad_type == YROAD_NONE &&
-        //     apriltag_type != APRILTAG_FOUND && apriltag_type != APRILTAG_LEAVE)
-        //     check_circle();
-        // if (cross_type != CROSS_NONE) {
-        //     circle_type = CIRCLE_NONE;
-        //     yroad_type = YROAD_NONE;
-        // }
-        if (garage_type == GARAGE_NONE)
-            check_cross();
-        if (garage_type == GARAGE_NONE && cross_type == CROSS_NONE ) 
-            check_circle();
-        if (cross_type != CROSS_NONE) {
-            circle_type = CIRCLE_NONE;
-        }
-       
-        
-      
+    while (g_running && cap.read(frame)) {
+        if (frame.empty()) continue;
 
-        // //车库 ,十字清Aprltag标志
-        // if (garage_type != GARAGE_NONE || cross_type != CROSS_NONE) apriltag_type = APRILTAG_NONE;
+        const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        std::vector<Detection> dets = infer_one_frame(net, frame, input_size, score_thresh, nms_thresh);
+        const std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 
-        // //根据检查结果执行模式
-        // if (yroad_type != YROAD_NONE) run_yroad();
-        if (cross_type != CROSS_NONE) run_cross();
-        if (circle_type != CIRCLE_NONE) run_circle();
-        // if (garage_type != GARAGE_NONE) run_garage();
+        const double infer_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const double fps = infer_ms > 0.0 ? 1000.0 / infer_ms : 0.0;
+        ema_fps = frame_id == 0 ? fps : ema_fps * 0.9 + fps * 0.1;
 
-        // 中线跟踪
-        if (cross_type != CROSS_IN) {
-            if (track_type == TRACK_LEFT) {
-                memcpy(mid_line.center_line, rptsc0, sizeof(mid_line.center_line));
-                // mid_line = left_line;
-                mid_line.len = rptsc0_num;
-            } else {
-                memcpy(mid_line.center_line, rptsc1, sizeof(mid_line.center_line));
-                //mid_line = right_line;
-                mid_line.len = rptsc1_num;
-            }
-        } 
-        else {
-            //十字根据远线控制
-            if (track_type == TRACK_LEFT) {
-               track_leftline(far_rpts0s + far_Lpt0_rpts0s_id, far_rpts0s_num - far_Lpt0_rpts0s_id, mid_line.center_line,
-                               (int) round(angle_dist / sample_dist), pixel_per_meter * ROAD_WIDTH / 2);
-               mid_line.len = far_rpts0s_num - far_Lpt0_rpts0s_id;
-            } else {
-                track_rightline(far_rpts1s + far_Lpt1_rpts1s_id, far_rpts1s_num - far_Lpt1_rpts1s_id, mid_line.center_line,
-                                (int) round(angle_dist / sample_dist), pixel_per_meter * ROAD_WIDTH / 2);
-                mid_line.len = far_rpts1s_num - far_Lpt1_rpts1s_id;
-            }
+        draw_results(frame, dets, infer_ms, ema_fps);
+        if (server_port > 0 && server.is_running()) {
+            server.update_frame(frame);
         }
 
-        for(int i = 0; i < left_line.len; i++) {
-            circle(img, Point(left_line.line[i][0], left_line.line[i][1]), 1, Scalar(255,0,0), -1);
+        if (print_interval <= 1 || frame_id % print_interval == 0 || !dets.empty()) {
+            std::cout << "frame=" << frame_id
+                      << " detections=" << dets.size()
+                      << " infer_ms=" << infer_ms
+                      << " fps=" << fps
+                      << " avg_fps=" << ema_fps
+                      << format_detections(dets)
+                      << std::endl;
         }
-        for(int i = 0; i < right_line.len; i++) {
-            circle(img, Point(right_line.line[i][0], right_line.line[i][1]), 1, Scalar(0,0,255), -1);
-        }
-        for(int i = 0; i < mid_line.len; i++) {
-            int pt[2];
-            if(!map_inv(mid_line.center_line[i], pt)) continue;
-            circle(img, Point(pt[0], pt[1]), 2, Scalar(0,255,0), -1);
-        }
-        // for(int i = 0; i < rptsc1_num; i++) {
-        //     int pt[2];
-        //     if(!map_inv(rptsc1[i], pt)) continue;
-        //     circle(img, Point(pt[0], pt[1]), 2, Scalar(0,255,255), -1);
-        // }
-        for (int i = 0; i < rpts0an_num; i++) {
-            if (left_line.angle_max[i] != 0) {  // 只显示非零的极大值点
-            int pt[2];
-            if(!map_inv(rpts0s[i], pt)) continue;
-            circle(img, Point(pt[0],pt[1]), 3, Scalar(0, 255, 255), -1);
-            // lcd.showDouble(0, 90, (double)left_line.angle[i], 5,2);
-            // lcd.showDouble(30, 90, left_line.angle[clip(i+10, 0, rpts0an_num)], 5, 2);
-            // lcd.showDouble(60, 90, left_line.angle[clip(i-10, 0, rpts0an_num)], 5, 2);
-            // lcd.showInt(90, 90, left_line.angle[i], 3);
-            }
-            
-        } 
-        lcd.showInt(0, 90, rpts0s_num, 3);
-        lcd.showInt(40, 90, rpts1s_num, 3);
-        lcd.showInt(0, 100, Lpt0_found, 1); 
-        lcd.showInt(20, 100, Lpt1_found, 1);
-        lcd.showInt(40, 100, is_straight0, 1);
-        lcd.showInt(60, 100, is_straight1, 1);
-        // lcd.showString(0, 110, cross_type == CROSS_IN ? "CROSS" : "NORMAL");
-        lcd.showInt(0, 110, direction_l, 2);
-        lcd.showInt(60, 110, direction_r, 2);
-        // lcd.showString(0, 120, circle_type != CIRCLE_NONE ? "CIRCLE" : "NO CIRCLE");
-        lcd.showInt(100, 120, circle_type, 2);
-        lcd.showInt(60,120, motor_r.duty,4);
-        lcd.showInt(0,120, motor_l.duty,4);
-        lcd.showInt(60, 130, motor_r.encoder_speed,4);
-        lcd.showInt(0, 130, motor_l.encoder_speed,4);
-        lcd.showDouble(100, 130, angle, 4, 2);
-        lcd.showInt(60, 140, motor_r.target_speed,4);
-        lcd.showInt(0, 140, motor_l.target_speed,4);
-        lcd.showDouble(100, 140, adc_angle, 4, 2);
-        // circle(bird_img, Point(left_line.line[Lpt0_rpts0s_id][0], left_line.line[Lpt0_rpts0s_id][1]), 3, Scalar(255,255,0), -1);
-        lcd.showCVImage(0, 0, img, 128, 80);
-        // lcd.showInt(0, 90, left_line.len, 3);
-        // lcd.showInt(40, 90, right_line.len, 3);
-        // lcd.showInt(80, 90, track_type, 1);
-        // // 车轮对应点(纯跟踪起始点)
-        // float cx = 80;// 车轮对应点x坐标（像素），需要根据实际情况调整
-        // float cy = 170;// 车轮对应点y坐标（像素），需要根据实际情况调整
-        float cx = mapx[86][86];
-        float cy = mapy[86][86];
 
-        // // 找最近点(起始点中线归一化)
-        float min_dist = 1e10;
-        int begin_id = -1;
-        for (int i = 0; i < 40; i++) {
-            float dx = mid_line.center_line[i][0] - cx;
-            float dy = mid_line.center_line[i][1] - cy;
-            float dist = sqrt(dx * dx + dy * dy);
-            if (dist < min_dist) {
-                min_dist = dist;
-                begin_id = i;
-            }
-        }
-        // 特殊模式下，不找最近点(由于边线会绕一圈回来，导致最近点为边线最后一个点，从而中线无法正常生成)
-        if (cross_type == CROSS_IN) begin_id = 0;
-
-        // 中线有点，同时最近点不是最后几个点
-        if (begin_id >= 0 && mid_line.len- begin_id >= 3) {
-            // 归一化中线
-            mid_line.center_line[begin_id][0] = cx;
-            mid_line.center_line[begin_id][1] = cy;
-            mid_uinum = sizeof(mid_ui) / sizeof(mid_ui[0]);
-            resample_points(mid_line.center_line + begin_id, mid_line.len - begin_id, mid_ui, &mid_uinum, sample_dist * pixel_per_meter);
-
-            // 远预锚点位置
-            int aim_idx = clip(round(aim_distance / sample_dist), 0, mid_uinum - 1);
-            // 近预锚点位置
-            int aim_idx_near = clip(round(0.25 / sample_dist), 0, mid_uinum - 1);
-
-            // 计算远锚点偏差值
-            float dx = mid_ui[aim_idx][0] - cx;
-            float dy = cy - mid_ui[aim_idx][1] + 0.2 * pixel_per_meter;
-            float dn = sqrt(dx * dx + dy * dy);
-            float error = -atan2f(dx, dy) * 180 / PI;
-            assert(!isnan(error));
-
-            // 若考虑近点远点,可近似构造Stanley算法,避免撞路肩
-            // 计算近锚点偏差值
-            float dx_near = mid_ui[aim_idx_near][0] - cx;
-            float dy_near = cy - mid_ui[aim_idx_near][1] + 0.2 * pixel_per_meter;
-            float dn_near = sqrt(dx_near * dx_near + dy_near * dy_near);
-            float error_near = -atan2f(dx_near, dy_near) * 180 / PI;
-            assert(!isnan(error_near));
-
-            // // 远近锚点综合考虑
-            // //angle = pid_solve(&servo_pid, error * far_rate + error_near * (1 - far_rate));
-            // // 根据偏差进行PD计算
-            // //float angle = pid_solve(&servo_pid, error);
-
-            // 纯跟踪算法(只考虑远点)
-            float pure_angle = -atanf(pixel_per_meter * 2 * 0.2 * dx / dn / dn) / PI * 180 / SMOTOR_RATE;
-            angle = pid_solve(&servo_pid, pure_angle);
-            // angle = MINMAX(angle, -14.5, 14.5);
-
-            // //非上坡电感控制,PD计算之后的值用于寻迹舵机的控制
-            // if (enable_adc) {
-            //     // 当前上坡模式，不控制舵机，同时清除所有标志
-            //     yroad_type = YROAD_NONE;
-            //     circle_type = CIRCLE_NONE;
-            //     cross_type = CROSS_NONE;
-            //     garage_type = GARAGE_NONE;
-            //     apriltag_type = APRILTAG_NONE;
-            // } else if (adc_cross && cross_type == CROSS_IN) {
-            //     // 当前是十字模式，同时启用了电感过十字，则不控制舵机
-            // } else {
-            //     smotor1_control(servo_duty(SMOTOR1_CENTER + angle));
-            // }
-
-        } else {
-            // 中线点过少(出现问题)，则不控制舵机
-            mid_uinum = 0;
-        }
+        ++frame_id;
     }
-    cap.release();  
+
+    server.stop_server();
+    std::cout << "detect stopped, total_frames=" << frame_id << std::endl;
     return 0;
-}
-
-
-
-
-void process_img(void) {
-
-    // 原图找左右边线    
-    
-    flip(img, img, -1);
-    // warpPerspective(img, bird_img, transform_matrix, Size(160, 120), INTER_LINEAR);
-    nitoushi_fast(img, bird_img);
-    // flip(bird_img, bird_img, -1);
-    cvtColor(img, img_raw, COLOR_RGB2GRAY);
-    medianBlur(img_raw, img_mb, 3);
-    threshold(img_mb, img_bin, 0, 255, THRESH_OTSU);
-
-    int x = 86;
-    int y = 96;
-    left_line.len = EDGELINE_MAX;
-    right_line.len = EDGELINE_MAX;
-        
-    find_rightbase(img_bin, &x, &y);
-    findline_righthand_adaptive(img_bin, x, y, right_line.line, &right_line.len);
-        
-    int x1 = 86;
-    int y1 = 96;
-    find_leftbase(img_bin, &x1, &y1);
-    findline_lefthand_adaptive(img_bin, x1, y1, left_line.line, &left_line.len);
-
-    // 去畸变+透视变换
-    for (int i = 0; i < left_line.len; i++) {
-        rpts0[i][0] = mapx[left_line.line[i][1]][left_line.line[i][0]];
-        rpts0[i][1] = mapy[left_line.line[i][1]][left_line.line[i][0]];
-    }
-    rpts0_num = left_line.len;
-    for (int i = 0; i < right_line.len; i++) {
-        rpts1[i][0] = mapx[right_line.line[i][1]][right_line.line[i][0]];
-        rpts1[i][1] = mapy[right_line.line[i][1]][right_line.line[i][0]];
-    }
-    rpts1_num = right_line.len;
-
-    // 边线滤波
-    blur_points(rpts0, rpts0_num, rpts0b, 7);
-    blur_points(rpts1, rpts1_num, rpts1b, 7);
-    rpts0b_num = rpts0_num;
-    rpts1b_num = rpts1_num;
-    // 边线等距采样
-    rpts0s_num = sizeof(rpts0s) / sizeof(rpts0s[0]);
-    rpts1s_num = sizeof(rpts1s) / sizeof(rpts1s[0]);
-    resample_points(rpts0b, rpts0b_num, rpts0s, &rpts0s_num, sample_dist * pixel_per_meter);
-    resample_points(rpts1b, rpts1b_num, rpts1s, &rpts1s_num, sample_dist * pixel_per_meter);
-
-    // 边线局部角度变化率
-    local_angle_points(rpts0s, rpts0s_num, left_line.angle, 10);
-    rpts0a_num = rpts0s_num;    
-    local_angle_points(rpts1s, rpts1s_num, right_line.angle, 10);
-    rpts1a_num = rpts1s_num;
-    // 角度变化率非极大抑制
-    nms_angle(left_line.angle, rpts0a_num, left_line.angle_max, 23);
-    rpts0an_num = rpts0a_num;
-    nms_angle(right_line.angle, rpts1a_num, right_line.angle_max, 23);
-    rpts1an_num = rpts1a_num;
-    // 左右中线跟踪
-    track_leftline(rpts0s, rpts0s_num, rptsc0, 10, pixel_per_meter * ROAD_WIDTH / 2);
-    rptsc0_num = rpts0s_num;
-    track_rightline(rpts1s, rpts1s_num, rptsc1, 10, pixel_per_meter * ROAD_WIDTH / 2);
-    rptsc1_num = rpts1s_num;
-   
-}
-
-void imu_get_thread(void *arg) {
-   encoder_get();
-   elec_calculate();
-   motor_control();
-
-   
 }

@@ -27,13 +27,10 @@ include_directories(${PROJECT_SOURCE_DIR}/cross_lib/opencv/include/opencv4)
 include_directories(${PROJECT_SOURCE_DIR}/cross_lib/json/include)
 include_directories(${PROJECT_SOURCE_DIR}/cross_lib/ncnn/include/ncnn)
 
-file(GLOB_RECURSE MYSRC
-    ${PROJECT_SOURCE_DIR}/smartCar/*.cc
-    ${PROJECT_SOURCE_DIR}/smartCar/*.cpp  
-    ${PROJECT_SOURCE_DIR}/smartCar/*.c
+set(MYSRC
+    ${PROJECT_SOURCE_DIR}/smartCar/main.cc
+    ${PROJECT_SOURCE_DIR}/smartCar/wuwu_library/ww_camera_server.cc
 )
-
-list(FILTER MYSRC EXCLUDE REGEX ".*/smartCar/detect\.cc$")
 
 link_directories(${CROSSTOOL_DIR}/loongarch64-unknown-linux-gnu/lib)
 link_directories(${PROJECT_SOURCE_DIR}/cross_lib/opencv/lib)
