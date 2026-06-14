@@ -45,4 +45,6 @@ set(CMAKE_MAKEFILE_PRODUCTS
 set(CMAKE_DEPEND_INFO_FILES
   "CMakeFiles/main.dir/DependInfo.cmake"
   "CMakeFiles/ncnn_detect_video.dir/DependInfo.cmake"
+  "CMakeFiles/cls_fps.dir/DependInfo.cmake"
+  "CMakeFiles/cls_image_test.dir/DependInfo.cmake"
   )

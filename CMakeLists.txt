@@ -47,11 +47,25 @@ target_link_libraries(main PRIVATE
                         ncnn
                         gomp)
 
-add_executable(ncnn_detect_video ${PROJECT_SOURCE_DIR}/smartCar/detect.cc)
+add_executable(ncnn_detect_video ${PROJECT_SOURCE_DIR}/smartCar/crop.cc)
 target_link_libraries(ncnn_detect_video PRIVATE
                         opencv_core
                         opencv_imgcodecs
                         opencv_imgproc
                         opencv_videoio
+                        ncnn
+                        gomp)
+
+add_executable(cls_fps ${PROJECT_SOURCE_DIR}/smartCar/cls_fps.cc)
+target_link_libraries(cls_fps PRIVATE
+                        ncnn
+                        gomp)
+
+add_executable(cls_image_test ${PROJECT_SOURCE_DIR}/smartCar/detect.cc)
+target_link_libraries(cls_image_test PRIVATE
+                        opencv_core
+                        opencv_imgcodecs
+                        opencv_imgproc
+			opencv_videoio
                         ncnn
                         gomp)

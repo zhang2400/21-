@@ -142,12 +142,86 @@ ncnn_detect_video/fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/ncnn_detect_video.dir/build.make CMakeFiles/ncnn_detect_video.dir/build
 .PHONY : ncnn_detect_video/fast
 
+#=============================================================================
+# Target rules for targets named cls_fps
+
+# Build rule for target.
+cls_fps: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 cls_fps
+.PHONY : cls_fps
+
+# fast build rule for target.
+cls_fps/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cls_fps.dir/build.make CMakeFiles/cls_fps.dir/build
+.PHONY : cls_fps/fast
+
+#=============================================================================
+# Target rules for targets named cls_image_test
+
+# Build rule for target.
+cls_image_test: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 cls_image_test
+.PHONY : cls_image_test
+
+# fast build rule for target.
+cls_image_test/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cls_image_test.dir/build.make CMakeFiles/cls_image_test.dir/build
+.PHONY : cls_image_test/fast
+
+smartCar/cls_fps.o: smartCar/cls_fps.cc.o
+.PHONY : smartCar/cls_fps.o
+
+# target to build an object file
+smartCar/cls_fps.cc.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cls_fps.dir/build.make CMakeFiles/cls_fps.dir/smartCar/cls_fps.cc.o
+.PHONY : smartCar/cls_fps.cc.o
+
+smartCar/cls_fps.i: smartCar/cls_fps.cc.i
+.PHONY : smartCar/cls_fps.i
+
+# target to preprocess a source file
+smartCar/cls_fps.cc.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cls_fps.dir/build.make CMakeFiles/cls_fps.dir/smartCar/cls_fps.cc.i
+.PHONY : smartCar/cls_fps.cc.i
+
+smartCar/cls_fps.s: smartCar/cls_fps.cc.s
+.PHONY : smartCar/cls_fps.s
+
+# target to generate assembly for a file
+smartCar/cls_fps.cc.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cls_fps.dir/build.make CMakeFiles/cls_fps.dir/smartCar/cls_fps.cc.s
+.PHONY : smartCar/cls_fps.cc.s
+
+smartCar/crop.o: smartCar/crop.cc.o
+.PHONY : smartCar/crop.o
+
+# target to build an object file
+smartCar/crop.cc.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ncnn_detect_video.dir/build.make CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o
+.PHONY : smartCar/crop.cc.o
+
+smartCar/crop.i: smartCar/crop.cc.i
+.PHONY : smartCar/crop.i
+
+# target to preprocess a source file
+smartCar/crop.cc.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ncnn_detect_video.dir/build.make CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.i
+.PHONY : smartCar/crop.cc.i
+
+smartCar/crop.s: smartCar/crop.cc.s
+.PHONY : smartCar/crop.s
+
+# target to generate assembly for a file
+smartCar/crop.cc.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/ncnn_detect_video.dir/build.make CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.s
+.PHONY : smartCar/crop.cc.s
+
 smartCar/detect.o: smartCar/detect.cc.o
 .PHONY : smartCar/detect.o
 
 # target to build an object file
 smartCar/detect.cc.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/ncnn_detect_video.dir/build.make CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cls_image_test.dir/build.make CMakeFiles/cls_image_test.dir/smartCar/detect.cc.o
 .PHONY : smartCar/detect.cc.o
 
 smartCar/detect.i: smartCar/detect.cc.i
@@ -155,7 +229,7 @@ smartCar/detect.i: smartCar/detect.cc.i
 
 # target to preprocess a source file
 smartCar/detect.cc.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/ncnn_detect_video.dir/build.make CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.i
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cls_image_test.dir/build.make CMakeFiles/cls_image_test.dir/smartCar/detect.cc.i
 .PHONY : smartCar/detect.cc.i
 
 smartCar/detect.s: smartCar/detect.cc.s
@@ -163,7 +237,7 @@ smartCar/detect.s: smartCar/detect.cc.s
 
 # target to generate assembly for a file
 smartCar/detect.cc.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/ncnn_detect_video.dir/build.make CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.s
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cls_image_test.dir/build.make CMakeFiles/cls_image_test.dir/smartCar/detect.cc.s
 .PHONY : smartCar/detect.cc.s
 
 smartCar/main.o: smartCar/main.cc.o
@@ -222,8 +296,16 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
+	@echo "... cls_fps"
+	@echo "... cls_image_test"
 	@echo "... main"
 	@echo "... ncnn_detect_video"
+	@echo "... smartCar/cls_fps.o"
+	@echo "... smartCar/cls_fps.i"
+	@echo "... smartCar/cls_fps.s"
+	@echo "... smartCar/crop.o"
+	@echo "... smartCar/crop.i"
+	@echo "... smartCar/crop.s"
 	@echo "... smartCar/detect.o"
 	@echo "... smartCar/detect.i"
 	@echo "... smartCar/detect.s"

@@ -69,28 +69,28 @@ include CMakeFiles/ncnn_detect_video.dir/progress.make
 # Include the compile flags for this target's objects.
 include CMakeFiles/ncnn_detect_video.dir/flags.make
 
-CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o: CMakeFiles/ncnn_detect_video.dir/flags.make
-CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o: ../smartCar/detect.cc
-CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o: CMakeFiles/ncnn_detect_video.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o"
-	/opt/loongson-gnu-toolchain-13.2/bin/loongarch64-unknown-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o -MF CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o.d -o CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o -c /home/wuwu/workspace/WuwuSama_Icar_Project/smartCar/detect.cc
+CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o: CMakeFiles/ncnn_detect_video.dir/flags.make
+CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o: ../smartCar/crop.cc
+CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o: CMakeFiles/ncnn_detect_video.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --progress-dir=/home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o"
+	/opt/loongson-gnu-toolchain-13.2/bin/loongarch64-unknown-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o -MF CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o.d -o CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o -c /home/wuwu/workspace/WuwuSama_Icar_Project/smartCar/crop.cc
 
-CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.i"
-	/opt/loongson-gnu-toolchain-13.2/bin/loongarch64-unknown-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/wuwu/workspace/WuwuSama_Icar_Project/smartCar/detect.cc > CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.i
+CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Preprocessing CXX source to CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.i"
+	/opt/loongson-gnu-toolchain-13.2/bin/loongarch64-unknown-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/wuwu/workspace/WuwuSama_Icar_Project/smartCar/crop.cc > CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.i
 
-CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.s"
-	/opt/loongson-gnu-toolchain-13.2/bin/loongarch64-unknown-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/wuwu/workspace/WuwuSama_Icar_Project/smartCar/detect.cc -o CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.s
+CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green "Compiling CXX source to assembly CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.s"
+	/opt/loongson-gnu-toolchain-13.2/bin/loongarch64-unknown-linux-gnu-g++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/wuwu/workspace/WuwuSama_Icar_Project/smartCar/crop.cc -o CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.s
 
 # Object files for target ncnn_detect_video
 ncnn_detect_video_OBJECTS = \
-"CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o"
+"CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o"
 
 # External object files for target ncnn_detect_video
 ncnn_detect_video_EXTERNAL_OBJECTS =
 
-ncnn_detect_video: CMakeFiles/ncnn_detect_video.dir/smartCar/detect.cc.o
+ncnn_detect_video: CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o
 ncnn_detect_video: CMakeFiles/ncnn_detect_video.dir/build.make
 ncnn_detect_video: CMakeFiles/ncnn_detect_video.dir/link.txt
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=/home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Linking CXX executable ncnn_detect_video"

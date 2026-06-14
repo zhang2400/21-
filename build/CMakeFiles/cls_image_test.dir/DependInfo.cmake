@@ -8,7 +8,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/home/wuwu/workspace/WuwuSama_Icar_Project/smartCar/crop.cc" "CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o" "gcc" "CMakeFiles/ncnn_detect_video.dir/smartCar/crop.cc.o.d"
+  "/home/wuwu/workspace/WuwuSama_Icar_Project/smartCar/detect.cc" "CMakeFiles/cls_image_test.dir/smartCar/detect.cc.o" "gcc" "CMakeFiles/cls_image_test.dir/smartCar/detect.cc.o.d"
   )
 
 # Targets to which this target links.

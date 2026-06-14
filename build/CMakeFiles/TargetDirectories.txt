@@ -1,4 +1,6 @@
 /home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles/main.dir
 /home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles/ncnn_detect_video.dir
+/home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles/cls_fps.dir
+/home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles/cls_image_test.dir
 /home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles/edit_cache.dir
 /home/wuwu/workspace/WuwuSama_Icar_Project/build/CMakeFiles/rebuild_cache.dir
